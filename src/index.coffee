@@ -78,6 +78,7 @@ bundle = ( entryPath ) ->
     outfile: "/dev/null"
     external: [ "@aws-sdk/*" ]
     metafile: true
+    absWorkingDir: process.cwd()
   )
 
   filePackages = {}
