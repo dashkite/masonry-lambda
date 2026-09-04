@@ -1,174 +1,296 @@
-import FS from "node:fs/promises"
 import Path from "node:path"
+import FS from "node:fs/promises"
 import JSZip from "jszip"
-import esbuild from "esbuild"
 import { LambdaClient, UpdateFunctionCodeCommand } from "@aws-sdk/client-lambda"
+import { interpolate } from "@dashkite/joy/text"
+import Atlas from "@dashkite/atlas"
+import Generators from "@dashkite/atlas/generators"
+import Local from "@dashkite/atlas/generators/local"
+import presets from "./presets"
 
-normalize = ( path ) ->
-  if path[0] == "/" || path[0] == "."
-    path
+stripVersion = ( str ) ->
+  atIndex = str.lastIndexOf "@"
+  if atIndex > 0
+    str.slice 0, atIndex
   else
-    "./#{ path }"
-  
+    str
 
-cache = {}
+parsePackageTarget = ( target, defaultImporter = "" ) ->
+  unversionedTarget = target.split("/").map(stripVersion).join("/").replace(/^\//, "")
+  if target.indexOf("node_modules/") == -1
+    return {
+      isPackage: false
+      path: target.replace(/^\//, "")
+      unversionedTarget
+      importer: defaultImporter
+    }
 
-read = ( path ) ->
-  ( cache[ path ] ?= await ( FS.readFile path, "utf8" ) )
+  cleanTarget = target.replace /^\//, ""
+  segments = cleanTarget.split(/\/node_modules\/|node_modules\//).filter Boolean
+  leafSegment = segments[ segments.length - 1 ]
 
-exists = ( path ) ->
+  if leafSegment.startsWith "@"
+    parts = leafSegment.split "/"
+    pkgWithVersion = parts.slice( 0, 2 ).join "/"
+    relPath = parts.slice( 2 ).join "/"
+  else
+    parts = leafSegment.split "/"
+    pkgWithVersion = parts[ 0 ]
+    relPath = parts.slice( 1 ).join "/"
+
+  atIndex = pkgWithVersion.lastIndexOf "@"
+  if atIndex > 0
+    specifier = pkgWithVersion.slice 0, atIndex
+    version = pkgWithVersion.slice atIndex + 1
+  else
+    specifier = pkgWithVersion
+    version = ""
+
+  name = if specifier.startsWith "@" then specifier.split("/")[ 1 ] else specifier
+  escapedSpecifier = specifier.replace /\//g, "+"
+
+  importer = defaultImporter
+  if segments.length > 1
+    firstSegment = segments[ 0 ].replace /\/$/, ""
+    firstPkgWithVersion = if firstSegment.startsWith "@"
+      firstSegment.split("/").slice( 0, 2 ).join "/"
+    else
+      firstSegment.split("/")[ 0 ]
+    cleanFirst = stripVersion firstPkgWithVersion
+    importer = if cleanFirst.startsWith "@" then cleanFirst.split("/")[ 1 ] else cleanFirst
+
+  {
+    isPackage: true
+    specifier
+    name
+    version
+    escapedSpecifier
+    path: relPath
+    importer
+    unversionedTarget
+  }
+
+entries = ( map ) ->
+  return unless map?
+  if map.imports?
+    for specifier, target of map.imports
+      yield { scope: "/", specifier, target }
+
+  if map.scopes?
+    for scope, mappings of map.scopes
+      for specifier, target of mappings
+        yield { scope, specifier, target }
+
+deriveScopeBundleDirectory = ( scope ) ->
+  if scope == "/"
+    ""
+  else
+    scope.replace(/^\//, "").replace(/\/$/, "")
+
+derivePackageSubpath = ( target ) ->
+  marker = "node_modules/"
+  index = target.lastIndexOf marker
+  if index != -1
+    target.slice index + marker.length
+  else
+    target.replace /^\//, ""
+
+derivePackageBundleDirectory = ( filePath ) ->
+  marker = "node_modules/"
+  index = filePath.lastIndexOf marker
+  return "" if index == -1
+
+  prefix = filePath.slice 0, index + marker.length
+  remainder = filePath.slice index + marker.length
+  parts = remainder.split "/"
+
+  packageName = if remainder.startsWith "@"
+    parts.slice( 0, 2 ).join "/"
+  else
+    parts[ 0 ]
+
+  Path.join prefix, packageName
+
+transformEntry = ({ scope = "/", target }) ->
+  targetParsed = parsePackageTarget target
+  if scope == "/"
+    targetParsed.unversionedTarget
+  else
+    scopeParsed = parsePackageTarget scope
+    if scopeParsed.isPackage && targetParsed.isPackage
+      Path.join scopeParsed.unversionedTarget.replace(/\/$/, ""), "node_modules", targetParsed.specifier, targetParsed.path
+    else
+      targetParsed.unversionedTarget
+
+resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:metarepo", scope = "/" ) ->
+  importer = if scope? && scope != "/"
+    scopeParsed = parsePackageTarget scope
+    if scopeParsed.isPackage then scopeParsed.name else defaultImporter
+  else
+    defaultImporter
+
+  parsed = parsePackageTarget target, importer
+  unless parsed.isPackage
+    return Path.resolve root, parsed.path
+
+  context = parsed
+  templateList = presets[ presetName ] ? presets[ "pnpm:metarepo" ]
+  for template in templateList
+    try
+      rel = interpolate template, context
+      candidate = Path.resolve root, rel
+      await FS.access candidate
+      return candidate
+
+  if presetName == "pnpm:metarepo"
+    parentDir = Path.dirname root
+    try
+      siblings = await FS.readdir parentDir
+      for sibling in siblings
+        siblingPath = Path.join parentDir, sibling
+        pkgJsonPath = Path.join siblingPath, "package.json"
+        try
+          manifest = JSON.parse await FS.readFile pkgJsonPath, "utf8"
+          if manifest.name == parsed.specifier
+            candidate = Path.join siblingPath, parsed.path
+            await FS.access candidate
+            return candidate
+        catch
+          continue
+
+      for sibling in siblings
+        candidate = Path.join parentDir, sibling, "node_modules", parsed.specifier, parsed.path
+        try
+          await FS.access candidate
+          return candidate
+        catch
+          continue
+    catch
+
+  throw new Error "Cannot resolve source for #{ parsed.specifier }@#{ parsed.version } (#{ parsed.path }) from #{ root }"
+
+findPackageManifest = ( filePath ) ->
   try
-    await ( read path )
-    true
+    realPath = await FS.realpath filePath
+    directory = Path.dirname realPath
+    while directory && directory != Path.dirname( directory )
+      manifestPath = Path.join directory, "package.json"
+      try
+        await FS.access manifestPath
+        return manifestPath
+      catch
+        directory = Path.dirname directory
   catch
-    false
+    null
 
-extension = ( ext, path ) ->
-  ( Path.join ( Path.dirname path ),
-    ( Path.basename path, ( Path.extname path ) ) + ext )
-
-findPackageRoot = ( directory ) ->
-  if await ( exists ( Path.join directory, "package.json" ) )
-    directory
+bundle = ( entryPath, options = {} ) ->
+  cwd = options.cwd ? options.root
+  relativeEntry = if cwd? && Path.isAbsolute entryPath
+    Path.relative cwd, entryPath
   else
-    parent = ( Path.dirname directory )
-    if parent == directory then null else await ( findPackageRoot parent )
+    entryPath
 
-getPackage = ( root ) ->
-  source = ( Path.join root, "package.json" )
-  text = await ( read source )
-  data = ( JSON.parse text )
-  { source, data }
+  preset = options.preset ? "pnpm:metarepo"
+  defaultImporter = if cwd? then Path.basename( cwd ) else ""
 
-getModule = ( source, buildDirectory ) ->
-  resolvedSource = ( Path.resolve source )
-  cwd = ( Path.resolve "." )
-  
-  root = await ( findPackageRoot ( Path.dirname resolvedSource ) )
-  throw new Error "Could not find package.json for #{ source }" if ! root?
-  
-  _package = await ( getPackage root )
-  local = root == cwd
+  Generators.clear()
+  Generators.register Local.make { options..., cwd }
 
-  target = if local
-    ( Path.relative cwd, resolvedSource )
-  else
-    ( Path.join "node_modules", _package.data.name,
-      ( Path.relative root, resolvedSource ) )
+  external = [ "@aws-sdk/*", ( options.external ? [] )... ]
 
-  _package.target = if local
-    "package.json"
-  else
-    ( Path.join "node_modules", _package.data.name, "package.json" )
-
-  { source, root, local, target, package: _package }
-
-bundle = ( entryPath ) ->
-  absoluteEntry = ( Path.resolve entryPath )
-  buildDirectory = ( Path.dirname absoluteEntry )
-
-  zip = new JSZip
-
-  { metafile } = await ( esbuild.build
-    entryPoints: [ absoluteEntry ]
-    bundle: true
-    sourcemap: false
+  map = await Atlas.generate [ relativeEntry ], null, {
+    options...
+    cwd
     platform: "node"
     conditions: [ "node" ]
-    outfile: "/dev/null"
-    external: [ "@aws-sdk/*" ]
-    metafile: true
-    absWorkingDir: process.cwd()
-  )
+    external: external
+  }
 
-  filePackages = {}
-  packageMetadata = {}
-  for file, _ of metafile.inputs
-    resolvedFile = ( Path.resolve file )
-    root = await ( findPackageRoot ( Path.dirname resolvedFile ) )
-    if root?
-      _package = await ( getPackage root )
-      filePackages[ resolvedFile ] = { root, package: _package }
-      packageMetadata[ root ] = _package
+  root = cwd
+  zip = new JSZip()
+  visitedDestinations = new Set()
+  visitedPackages = new Set()
 
-  cwd = ( Path.resolve "." )
-  packageImporters = {}
+  # Entry point
+  entrySourcePath = if root? then Path.resolve( root, relativeEntry ) else relativeEntry
+  zip.file relativeEntry, await FS.readFile( entrySourcePath )
+  visitedDestinations.add relativeEntry
 
-  for file, input of metafile.inputs
-    resolvedFile = ( Path.resolve file )
-    filePkg = filePackages[ resolvedFile ]
-    continue if ! filePkg?
+  # Root package.json if present
+  rootPkgJson = if root? then Path.resolve( root, "package.json" ) else "package.json"
+  try
+    zip.file "package.json", await FS.readFile( rootPkgJson )
+    visitedDestinations.add "package.json"
 
-    for imp in ( input.imports || [] )
-      resolvedImp = ( Path.resolve imp.path )
-      impPkg = filePackages[ resolvedImp ]
-      continue if ! impPkg?
+  for tuple from entries map
+    destination = transformEntry tuple
+    sourcePath = await resolveSourcePath root, tuple.target, defaultImporter, preset, tuple.scope
 
-      if impPkg.root != filePkg.root
-        packageImporters[ impPkg.root ] ?= new Set
-        packageImporters[ impPkg.root ].add filePkg.root
+    packageBundleDirectory = derivePackageBundleDirectory destination
+    if packageBundleDirectory != "" && !visitedPackages.has( packageBundleDirectory )
+      visitedPackages.add packageBundleDirectory
+      manifestSource = await findPackageManifest sourcePath
+      if manifestSource?
+        manifestDestination = Path.join packageBundleDirectory, "package.json"
+        unless visitedDestinations.has manifestDestination
+          visitedDestinations.add manifestDestination
+          content = await FS.readFile manifestSource
+          zip.file manifestDestination, content
 
-  packageTargets = {}
-  packageTargets[ cwd ] = [ "" ]
+    unless visitedDestinations.has destination
+      visitedDestinations.add destination
+      content = await FS.readFile sourcePath
+      zip.file destination, content
 
-  resolvePaths = ( pkgRoot ) ->
-    return packageTargets[ pkgRoot ] if packageTargets[ pkgRoot ]?
-
-    importers = packageImporters[ pkgRoot ]
-    if ! importers? || importers.size == 0
-      pkgName = packageMetadata[ pkgRoot ]?.data?.name
-      return packageTargets[ pkgRoot ] = [ ( Path.join "node_modules", pkgName ) ]
-
-    paths = []
-    for importerRoot in Array.from( importers )
-      parentPaths = ( await resolvePaths importerRoot )
-      pkgName = packageMetadata[ pkgRoot ]?.data?.name
-      for parentPath in parentPaths
-        paths.push ( Path.join parentPath, "node_modules", pkgName )
-    packageTargets[ pkgRoot ] = paths
-
-  for file, filePkg of filePackages
-    await ( resolvePaths filePkg.root )
-
-  for file, _ of metafile.inputs
-    resolvedFile = ( Path.resolve file )
-    filePkg = filePackages[ resolvedFile ]
-    continue if ! filePkg?
-
-    targets = packageTargets[ filePkg.root ]
-    for targetPkgDirectory in targets
-      relPath = ( Path.relative filePkg.root, resolvedFile )
-      targetFile = ( Path.join targetPkgDirectory, relPath )
-      ( zip.file targetFile, await ( read resolvedFile ) )
-
-      targetPkgJson = ( Path.join targetPkgDirectory, "package.json" )
-      ( zip.file targetPkgJson, await ( read filePkg.package.source ) )
-
-  await ( zip.generateAsync
+  await zip.generateAsync
     type: "nodebuffer"
     compression: "DEFLATE"
     compressionOptions:
       level: 9
-  )
 
 upload = ( functionName, zipBuffer, options = {} ) ->
   region = options.region || "us-east-1"
   lambda = new LambdaClient { region }
-  await ( lambda.send new UpdateFunctionCodeCommand
+  await lambda.send new UpdateFunctionCodeCommand
     FunctionName: functionName
     ZipFile: zipBuffer
-  )
   undefined
 
-unbundle = ( entryPath, targetDirectory ) ->
-  buffer = await ( bundle entryPath )
-  zip = await ( JSZip.loadAsync buffer )
+unbundle = ( entryPath, targetDirectory, options = {} ) ->
+  buffer = if Buffer.isBuffer entryPath
+    entryPath
+  else
+    await bundle entryPath, options
+  zip = await JSZip.loadAsync buffer
   for name, file of zip.files
-    if ! file.dir
-      outputPath = ( Path.join targetDirectory, name )
-      await ( FS.mkdir ( Path.dirname outputPath ), recursive: true )
-      content = await ( file.async "nodebuffer" )
-      await ( FS.writeFile outputPath, content )
-  undefined
+    unless file.dir
+      outputPath = Path.join targetDirectory, name
+      await FS.mkdir Path.dirname( outputPath ), recursive: true
+      content = await file.async "nodebuffer"
+      await FS.writeFile outputPath, content
 
-export { bundle, upload, unbundle, getModule }
+export default {
+  entries
+  deriveScopeBundleDirectory
+  derivePackageSubpath
+  derivePackageBundleDirectory
+  transformEntry
+  resolveSourcePath
+  findPackageManifest
+  bundle
+  upload
+  unbundle
+}
+
+export {
+  entries
+  deriveScopeBundleDirectory
+  derivePackageSubpath
+  derivePackageBundleDirectory
+  transformEntry
+  resolveSourcePath
+  findPackageManifest
+  bundle
+  upload
+  unbundle
+}

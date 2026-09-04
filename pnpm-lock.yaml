@@ -11,6 +11,12 @@ importers:
       '@aws-sdk/client-lambda':
         specifier: ^3.1079.0
         version: 3.1079.0
+      '@dashkite/atlas':
+        specifier: link:../atlas
+        version: link:../atlas
+      '@dashkite/joy':
+        specifier: link:../joy
+        version: link:../joy
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -45,6 +51,9 @@ importers:
       '@dashkite/genie-watch':
         specifier: ^0.5.0
         version: 0.5.0(@aws-sdk/credential-provider-node@3.529.0)
+      '@dashkite/genie-yaml':
+        specifier: link:../genie-yaml
+        version: link:../genie-yaml
 
 packages:
 
