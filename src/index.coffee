@@ -118,7 +118,11 @@ transformEntry = ({ scope = "/", target }) ->
   else
     scopeParsed = parsePackageTarget scope
     if scopeParsed.isPackage && targetParsed.isPackage
-      Path.join scopeParsed.unversionedTarget.replace(/\/$/, ""), "node_modules", targetParsed.specifier, targetParsed.path
+      if targetParsed.specifier == scopeParsed.specifier
+        targetParsed.unversionedTarget
+      else
+        pkgBundleDir = derivePackageBundleDirectory scopeParsed.unversionedTarget
+        Path.join pkgBundleDir, "node_modules", targetParsed.specifier, targetParsed.path
     else
       targetParsed.unversionedTarget
 
@@ -142,6 +146,20 @@ resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:met
       await FS.access candidate
       return candidate
 
+  # Fallback for npm: check packages nested inside root node_modules
+  nmDir = Path.join root, "node_modules"
+  try
+    nmEntries = await FS.readdir nmDir, withFileTypes: true
+    for entry in nmEntries
+      if entry.isDirectory()
+        candidate = Path.join nmDir, entry.name, "node_modules", parsed.specifier, parsed.path
+        try
+          await FS.access candidate
+          return candidate
+        catch
+          continue
+  catch
+
   if presetName == "pnpm:metarepo"
     parentDir = Path.dirname root
     try
@@ -164,7 +182,24 @@ resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:met
           await FS.access candidate
           return candidate
         catch
-          continue
+          null
+
+        if parsed.version
+          candidatePnpm = Path.join(
+            parentDir
+            sibling
+            "node_modules"
+            ".pnpm"
+            "#{ parsed.escapedSpecifier }@#{ parsed.version }"
+            "node_modules"
+            parsed.specifier
+            parsed.path
+          )
+          try
+            await FS.access candidatePnpm
+            return candidatePnpm
+          catch
+            null
     catch
 
   throw new Error "Cannot resolve source for #{ parsed.specifier }@#{ parsed.version } (#{ parsed.path }) from #{ root }"

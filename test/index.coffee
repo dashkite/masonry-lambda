@@ -45,14 +45,14 @@ do ->
       map2 =
         scopes:
           "/node_modules/pkg-a/":
-            "shared-dep": "/node_modules/pkg-a/node_modules/shared-dep/index.js"
+            "shared-dep": "/node_modules/shared-dep@1.0.0/index.js"
           "/node_modules/pkg-b/":
-            "shared-dep": "/node_modules/pkg-b/node_modules/shared-dep/index.js"
+            "shared-dep": "/node_modules/shared-dep@2.0.0/index.js"
 
       result2 = toArray entries map2
       assert.deepEqual [
-        { scope: "/node_modules/pkg-a/", specifier: "shared-dep", target: "/node_modules/pkg-a/node_modules/shared-dep/index.js" }
-        { scope: "/node_modules/pkg-b/", specifier: "shared-dep", target: "/node_modules/pkg-b/node_modules/shared-dep/index.js" }
+        { scope: "/node_modules/pkg-a/", specifier: "shared-dep", target: "/node_modules/shared-dep@1.0.0/index.js" }
+        { scope: "/node_modules/pkg-b/", specifier: "shared-dep", target: "/node_modules/shared-dep@2.0.0/index.js" }
       ], result2
 
       # 3. Combined imports and scopes
@@ -61,12 +61,12 @@ do ->
           "pkg-a": "/node_modules/pkg-a/index.js"
         scopes:
           "/node_modules/pkg-a/":
-            "dep-x": "/node_modules/pkg-a/node_modules/dep-x/index.js"
+            "dep-x": "/node_modules/dep-x@1.0.0/index.js"
 
       result3 = toArray entries map3
       assert.deepEqual [
         { scope: "/", specifier: "pkg-a", target: "/node_modules/pkg-a/index.js" }
-        { scope: "/node_modules/pkg-a/", specifier: "dep-x", target: "/node_modules/pkg-a/node_modules/dep-x/index.js" }
+        { scope: "/node_modules/pkg-a/", specifier: "dep-x", target: "/node_modules/dep-x@1.0.0/index.js" }
       ], result3
 
       # 4. Empty / null map
@@ -127,7 +127,14 @@ do ->
           specifier: "./helper.js"
           target: "/src/helper.js"
 
-      # 4. Scoped bare import with versions
+      # 4. Scoped bare import (un-nested target)
+      assert.equal "node_modules/package-a/node_modules/shared-dependency/index.js",
+        transformEntry
+          scope: "/node_modules/package-a@1.0.0/"
+          specifier: "shared-dependency"
+          target: "/node_modules/shared-dependency@1.0.0/index.js"
+
+      # 4b. Scoped bare import (hierarchical target)
       assert.equal "node_modules/package-a/node_modules/shared-dependency/index.js",
         transformEntry
           scope: "/node_modules/package-a@1.0.0/"
@@ -147,6 +154,27 @@ do ->
           scope: "/node_modules/package-a@1.0.0/"
           specifier: "#helpers"
           target: "/node_modules/package-a@1.0.0/src/helpers/index.js"
+
+      # 7. Scoped relative import from within a package subdirectory
+      assert.equal "node_modules/@scope/package-a/build/node/src/authorizer.js",
+        transformEntry
+          scope: "/node_modules/@scope/package-a@1.0.0/build/node/src/"
+          specifier: "./authorizer.js"
+          target: "/node_modules/@scope/package-a@1.0.0/build/node/src/authorizer.js"
+
+      # 8. Nested package relative import within nested package subdirectory
+      assert.equal "node_modules/pkg-a/node_modules/nested-pkg/build/node/src/handler.js",
+        transformEntry
+          scope: "/node_modules/pkg-a@1.0.0/node_modules/nested-pkg@2.0.0/build/node/src/"
+          specifier: "./handler.js"
+          target: "/node_modules/pkg-a@1.0.0/node_modules/nested-pkg@2.0.0/build/node/src/handler.js"
+
+      # 9. Scoped namespace nested package import
+      assert.equal "node_modules/@dashkite/kaiko/node_modules/@dashkite/joy/build/node/src/index.js",
+        transformEntry
+          scope: "/node_modules/@dashkite/kaiko@0.3.3/"
+          specifier: "@dashkite/joy"
+          target: "/node_modules/@dashkite/kaiko@0.3.3/node_modules/@dashkite/joy@0.7.0/build/node/src/index.js"
 
     test "bundle and unbundle simple application fixture", ->
       fixtureDirectory = "test/fixtures/simple-app"
