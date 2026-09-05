@@ -164,15 +164,8 @@ resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:met
         catch
           continue
 
-      for sibling in siblings
-        candidate = Path.join parentDir, sibling, "node_modules", parsed.specifier, parsed.path
-        try
-          await FS.access candidate
-          return candidate
-        catch
-          null
-
-        if parsed.version
+      if parsed.version
+        for sibling in siblings
           candidatePnpm = Path.join(
             parentDir
             sibling
@@ -188,6 +181,14 @@ resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:met
             return candidatePnpm
           catch
             null
+
+      for sibling in siblings
+        candidate = Path.join parentDir, sibling, "node_modules", parsed.specifier, parsed.path
+        try
+          await FS.access candidate
+          return candidate
+        catch
+          null
     catch
 
   throw new Error "Cannot resolve source for #{ parsed.specifier }@#{ parsed.version } (#{ parsed.path }) from #{ root }"

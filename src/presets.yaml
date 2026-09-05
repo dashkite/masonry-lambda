@@ -1,15 +1,15 @@
 pnpm:metarepo:
-  - "node_modules/${specifier}/${path}"
-  - "../${name}/${path}"
   - "node_modules/.pnpm/${escapedSpecifier}@${version}/node_modules/${specifier}/${path}"
-  - "../${importer}/node_modules/${specifier}/${path}"
   - "../${importer}/node_modules/.pnpm/${escapedSpecifier}@${version}/node_modules/${specifier}/${path}"
+  - "../${name}/${path}"
+  - "node_modules/${specifier}/${path}"
+  - "../${importer}/node_modules/${specifier}/${path}"
 
 pnpm:
-  - "node_modules/${specifier}/${path}"
   - "node_modules/.pnpm/${escapedSpecifier}@${version}/node_modules/${specifier}/${path}"
-  - "node_modules/${importer}/node_modules/${specifier}/${path}"
   - "node_modules/${importer}/node_modules/.pnpm/${escapedSpecifier}@${version}/node_modules/${specifier}/${path}"
+  - "node_modules/${specifier}/${path}"
+  - "node_modules/${importer}/node_modules/${specifier}/${path}"
 
 npm:
   - "node_modules/${specifier}/${path}"
