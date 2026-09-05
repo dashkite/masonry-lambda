@@ -112,19 +112,7 @@ derivePackageBundleDirectory = ( filePath ) ->
   Path.join prefix, packageName
 
 transformEntry = ({ scope = "/", target }) ->
-  targetParsed = parsePackageTarget target
-  if scope == "/"
-    targetParsed.unversionedTarget
-  else
-    scopeParsed = parsePackageTarget scope
-    if scopeParsed.isPackage && targetParsed.isPackage
-      if targetParsed.specifier == scopeParsed.specifier
-        targetParsed.unversionedTarget
-      else
-        pkgBundleDir = derivePackageBundleDirectory scopeParsed.unversionedTarget
-        Path.join pkgBundleDir, "node_modules", targetParsed.specifier, targetParsed.path
-    else
-      targetParsed.unversionedTarget
+  target.split("/").map(stripVersion).join("/").replace(/^\//, "")
 
 resolveSourcePath = ( root, target, defaultImporter = "", presetName = "pnpm:metarepo", scope = "/" ) ->
   importer = if scope? && scope != "/"

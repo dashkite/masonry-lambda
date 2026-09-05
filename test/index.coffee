@@ -127,8 +127,8 @@ do ->
           specifier: "./helper.js"
           target: "/src/helper.js"
 
-      # 4. Scoped bare import (un-nested target)
-      assert.equal "node_modules/package-a/node_modules/shared-dependency/index.js",
+      # 4. Scoped bare import (shared top-level package)
+      assert.equal "node_modules/shared-dependency/index.js",
         transformEntry
           scope: "/node_modules/package-a@1.0.0/"
           specifier: "shared-dependency"
